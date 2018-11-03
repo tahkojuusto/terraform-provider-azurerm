@@ -196,6 +196,17 @@ func resourceArmVirtualMachineScaleSet() *schema.Resource {
 				}, true),
 			},
 
+			"eviction_policy": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+				Default:  string(compute.Deallocate),
+				ValidateFunc: validation.StringInSlice([]string{
+					string(compute.Deallocate),
+					string(compute.Delete),
+				}, false),
+			},
+
 			"os_profile": {
 				Type:     schema.TypeList,
 				Required: true,
@@ -782,6 +793,7 @@ func resourceArmVirtualMachineScaleSetCreate(d *schema.ResourceData, meta interf
 	overprovision := d.Get("overprovision").(bool)
 	singlePlacementGroup := d.Get("single_placement_group").(bool)
 	priority := d.Get("priority").(string)
+	evictionPolicy := d.Get("eviction_policy").(string)
 
 	scaleSetProps := compute.VirtualMachineScaleSetProperties{
 		UpgradePolicy: &compute.UpgradePolicy{
@@ -795,6 +807,7 @@ func resourceArmVirtualMachineScaleSetCreate(d *schema.ResourceData, meta interf
 			OsProfile:        osProfile,
 			ExtensionProfile: extensions,
 			Priority:         compute.VirtualMachinePriorityTypes(priority),
+			EvictionPolicy:   compute.VirtualMachineEvictionPolicyTypes(evictionPolicy),
 		},
 		Overprovision:        &overprovision,
 		SinglePlacementGroup: &singlePlacementGroup,
@@ -912,7 +925,8 @@ func resourceArmVirtualMachineScaleSetRead(d *schema.ResourceData, meta interfac
 
 		if profile := properties.VirtualMachineProfile; profile != nil {
 			d.Set("license_type", profile.LicenseType)
-			d.Set("priority", profile.Priority)
+			d.Set("priority", string(profile.Priority))
+			d.Set("eviction_policy", string(profile.EvictionPolicy))
 
 			osProfile := flattenAzureRMVirtualMachineScaleSetOsProfile(d, profile.OsProfile)
 			if err := d.Set("os_profile", osProfile); err != nil {

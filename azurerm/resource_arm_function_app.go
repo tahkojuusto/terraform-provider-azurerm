@@ -205,6 +205,132 @@ func resourceArmFunctionApp() *schema.Resource {
 					},
 				},
 			},
+
+			"site_auth_settings": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"enabled": {
+							Type:     schema.TypeBool,
+							Required: false,
+							Optional: true,
+							Default:  true,
+						},
+						"unauthenticated_client_action": {
+							Type:     schema.TypeString,
+							Required: false,
+							Optional: true,
+							ValidateFunc: validation.StringInSlice([]string{
+								"AllowAnonymous",
+								"RedirectToLoginPage",
+							}, false),
+						},
+						"default_provider": {
+							Type:     schema.TypeString,
+							Required: false,
+							Optional: true,
+							ValidateFunc: validation.StringInSlice([]string{
+								"AzureActiveDirectory",
+								"Facebook",
+								"Google",
+								"MicrosoftAccount",
+								"Twitter",
+							}, false),
+						},
+						"token_store_enabled": {
+							Type:     schema.TypeBool,
+							Required: false,
+							Optional: true,
+							Default:  true,
+						},
+						"allowed_external_redirect_urls": {
+							Type:     schema.TypeList,
+							Required: false,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+						"client_id": {
+							Type:     schema.TypeString,
+							Required: false,
+							Optional: true,
+						},
+						"client_secret": {
+							Type:      schema.TypeString,
+							Required:  false,
+							Optional:  true,
+							Sensitive: true,
+						},
+						"issuer": {
+							Type:     schema.TypeString,
+							Required: false,
+							Optional: true,
+						},
+						"allowed_audiences": {
+							Type:     schema.TypeList,
+							Required: false,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+						"google_client_id": {
+							Type:     schema.TypeString,
+							Required: false,
+							Optional: true,
+						},
+						"google_client_secret": {
+							Type:      schema.TypeString,
+							Required:  false,
+							Optional:  true,
+							Sensitive: true,
+						},
+						"facebook_app_id": {
+							Type:     schema.TypeString,
+							Required: false,
+							Optional: true,
+						},
+						"facebook_app_secret": {
+							Type:      schema.TypeString,
+							Required:  false,
+							Optional:  true,
+							Sensitive: true,
+						},
+						"facebook_oauth_scopes": {
+							Type:     schema.TypeList,
+							Required: false,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+						"twitter_consumer_key": {
+							Type:     schema.TypeString,
+							Required: false,
+							Optional: true,
+						},
+						"twitter_consumer_secret": {
+							Type:      schema.TypeString,
+							Required:  false,
+							Optional:  true,
+							Sensitive: true,
+						},
+						"microsoft_account_client_id": {
+							Type:     schema.TypeString,
+							Required: false,
+							Optional: true,
+						},
+						"microsoft_account_client_secret": {
+							Type:     schema.TypeString,
+							Required: false,
+							Optional: true,
+						},
+						"microsoft_account_oauth_scopes": {
+							Type:     schema.TypeList,
+							Required: false,
+							Optional: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -300,6 +426,17 @@ func resourceArmFunctionAppCreate(d *schema.ResourceData, meta interface{}) erro
 
 	d.SetId(*read.ID)
 
+	siteAuthSettingsProperties := expandFunctionAppSiteAuthSettings(d)
+	siteAuthSettings := web.SiteAuthSettings{
+		SiteAuthSettingsProperties: siteAuthSettingsProperties,
+	}
+
+	if _, err := client.UpdateAuthSettings(ctx, resourceGroup, name, siteAuthSettings); err != nil {
+		//s, _ := json.MarshalIndent(properties, "", "\t")
+		//return fmt.Errorf("%+v\n", string(s))
+		return fmt.Errorf("Error updating Site Auth Settings for App Service %q: %+v", name, err)
+	}
+
 	return resourceArmFunctionAppUpdate(d, meta)
 }
 
@@ -392,6 +529,18 @@ func resourceArmFunctionAppUpdate(d *schema.ResourceData, meta interface{}) erro
 		}
 	}
 
+	if d.HasChange("site_auth_settings") {
+		siteAuthSettings := expandFunctionAppSiteAuthSettings(d)
+		properties := web.SiteAuthSettings{
+			SiteAuthSettingsProperties: siteAuthSettings,
+		}
+
+		if _, err := client.UpdateAuthSettings(ctx, resGroup, name, properties); err != nil {
+			//TODO: Make clearer invalid issuer url error message. (409, conflict)
+			return fmt.Errorf("Error updating Site Auth Settings for App Service %q: %+v", name, err)
+		}
+	}
+
 	return resourceArmFunctionAppRead(d, meta)
 }
 
@@ -430,6 +579,11 @@ func resourceArmFunctionAppRead(d *schema.ResourceData, meta interface{}) error 
 	connectionStringsResp, err := client.ListConnectionStrings(ctx, resGroup, name)
 	if err != nil {
 		return fmt.Errorf("Error making Read request on AzureRM Function App ConnectionStrings %q: %+v", name, err)
+	}
+
+	authSettingsResp, err := client.GetAuthSettings(ctx, resGroup, name)
+	if err != nil {
+		return fmt.Errorf("Error making Read request on AzureRM Function App AuthSettings %q: %+v", name, err)
 	}
 
 	siteCredFuture, err := client.ListPublishingCredentials(ctx, resGroup, name)
@@ -492,6 +646,11 @@ func resourceArmFunctionAppRead(d *schema.ResourceData, meta interface{}) error 
 
 	siteConfig := flattenFunctionAppSiteConfig(configResp.SiteConfig)
 	if err = d.Set("site_config", siteConfig); err != nil {
+		return err
+	}
+
+	siteAuth := flattenFunctionAppSiteAuthSettings(authSettingsResp.SiteAuthSettingsProperties)
+	if err = d.Set("site_auth_settings", siteAuth); err != nil {
 		return err
 	}
 
@@ -720,4 +879,175 @@ func flattenFunctionAppSiteCredential(input *web.UserProperties) []interface{} {
 	}
 
 	return append(results, result)
+}
+
+func expandFunctionAppSiteAuthSettings(d *schema.ResourceData) *web.SiteAuthSettingsProperties {
+	inputs := d.Get("site_auth_settings").([]interface{})
+	siteAuthSettingsProperties := &web.SiteAuthSettingsProperties{}
+
+	if len(inputs) == 0 {
+		return siteAuthSettingsProperties
+	}
+
+	input := inputs[0].(map[string]interface{})
+
+	if v, ok := input["enabled"]; ok {
+		siteAuthSettingsProperties.Enabled = utils.Bool(v.(bool))
+	}
+
+	if v, ok := input["unauthenticated_client_action"]; ok {
+		siteAuthSettingsProperties.UnauthenticatedClientAction = web.UnauthenticatedClientAction(v.(string))
+	}
+
+	if v, ok := input["default_provider"]; ok {
+		siteAuthSettingsProperties.DefaultProvider = web.BuiltInAuthenticationProvider(v.(string))
+	}
+
+	if v, ok := input["token_store_enabled"]; ok {
+		siteAuthSettingsProperties.TokenStoreEnabled = utils.Bool(v.(bool))
+	}
+
+	if v, ok := input["allowed_external_redirect_urls"]; ok {
+		siteAuthSettingsProperties.AllowedExternalRedirectUrls = utils.ExpandStringArray(v.([]interface{}))
+	}
+
+	if v, ok := input["client_id"]; ok {
+		siteAuthSettingsProperties.ClientID = utils.String(v.(string))
+	}
+
+	if v, ok := input["client_secret"]; ok {
+		siteAuthSettingsProperties.ClientSecret = utils.String(v.(string))
+	}
+
+	if v, ok := input["issuer"]; ok {
+		siteAuthSettingsProperties.Issuer = utils.String(v.(string))
+		siteAuthSettingsProperties.ValidateIssuer = utils.Bool(false)
+	}
+
+	if v, ok := input["allowed_audiences"]; ok {
+		siteAuthSettingsProperties.AllowedAudiences = utils.ExpandStringArray(v.([]interface{}))
+	}
+
+	if v, ok := input["google_client_id"]; ok {
+		siteAuthSettingsProperties.GoogleClientID = utils.String(v.(string))
+	}
+
+	if v, ok := input["google_client_secret"]; ok {
+		siteAuthSettingsProperties.GoogleClientSecret = utils.String(v.(string))
+	}
+
+	if v, ok := input["facebook_app_id"]; ok {
+		siteAuthSettingsProperties.FacebookAppID = utils.String(v.(string))
+	}
+
+	if v, ok := input["facebook_app_secret"]; ok {
+		siteAuthSettingsProperties.FacebookAppSecret = utils.String(v.(string))
+	}
+
+	if v, ok := input["facebook_oauth_scopes"]; ok {
+		siteAuthSettingsProperties.FacebookOAuthScopes = utils.ExpandStringArray(v.([]interface{}))
+	}
+
+	if v, ok := input["twitter_consumer_key"]; ok {
+		siteAuthSettingsProperties.TwitterConsumerKey = utils.String(v.(string))
+	}
+
+	if v, ok := input["twitter_consumer_secret"]; ok {
+		siteAuthSettingsProperties.TwitterConsumerSecret = utils.String(v.(string))
+	}
+
+	if v, ok := input["microsoft_account_client_id"]; ok {
+		siteAuthSettingsProperties.MicrosoftAccountClientID = utils.String(v.(string))
+	}
+
+	if v, ok := input["microsoft_account_client_secret"]; ok {
+		siteAuthSettingsProperties.MicrosoftAccountClientSecret = utils.String(v.(string))
+	}
+
+	if v, ok := input["microsoft_account_oauth_scopes"]; ok {
+		siteAuthSettingsProperties.MicrosoftAccountOAuthScopes = utils.ExpandStringArray(v.([]interface{}))
+	}
+
+	return siteAuthSettingsProperties
+}
+
+func flattenFunctionAppSiteAuthSettings(properties *web.SiteAuthSettingsProperties) []interface{} {
+	if properties == nil {
+		return make([]interface{}, 0)
+	}
+
+	result := make(map[string]interface{})
+
+	if properties.Enabled != nil {
+		result["enabled"] = *properties.Enabled
+	}
+
+	result["unauthenticated_client_action"] = properties.UnauthenticatedClientAction
+	result["default_provider"] = properties.DefaultProvider
+
+	if properties.TokenStoreEnabled != nil {
+		result["token_store_enabled"] = *properties.TokenStoreEnabled
+	}
+
+	if properties.AllowedExternalRedirectUrls != nil {
+		result["allowed_external_redirect_urls"] = utils.FlattenStringArray(properties.AllowedExternalRedirectUrls)
+	}
+
+	if properties.ClientID != nil {
+		result["client_id"] = *properties.ClientID
+	}
+
+	if properties.ClientSecret != nil {
+		result["client_secret"] = *properties.ClientSecret
+	}
+
+	if properties.Issuer != nil {
+		result["issuer"] = *properties.Issuer
+	}
+
+	if properties.AllowedAudiences != nil {
+		result["allowed_audiences"] = utils.FlattenStringArray(properties.AllowedAudiences)
+	}
+
+	if properties.GoogleClientID != nil {
+		result["google_client_id"] = *properties.GoogleClientID
+	}
+
+	if properties.GoogleClientSecret != nil {
+		result["google_client_secret"] = *properties.GoogleClientSecret
+	}
+
+	if properties.FacebookAppID != nil {
+		result["facebook_app_id"] = *properties.FacebookAppID
+	}
+
+	if properties.FacebookAppSecret != nil {
+		result["facebook_app_secret"] = *properties.FacebookAppSecret
+	}
+
+	if properties.FacebookOAuthScopes != nil {
+		result["facebook_oauth_scopes"] = *properties.FacebookOAuthScopes
+	}
+
+	if properties.TwitterConsumerKey != nil {
+		result["twitter_consumer_key"] = *properties.TwitterConsumerKey
+	}
+
+	if properties.TwitterConsumerSecret != nil {
+		result["twitter_consumer_secret"] = *properties.TwitterConsumerSecret
+	}
+
+	if properties.MicrosoftAccountClientID != nil {
+		result["microsoft_account_client_id"] = *properties.MicrosoftAccountClientID
+	}
+
+	if properties.MicrosoftAccountClientSecret != nil {
+		result["microsoft_account_client_secret"] = *properties.MicrosoftAccountClientSecret
+	}
+
+	if properties.MicrosoftAccountOAuthScopes != nil {
+		result["microsoft_account_oauth_scopes"] = *properties.MicrosoftAccountOAuthScopes
+	}
+
+	return []interface{}{result}
 }
